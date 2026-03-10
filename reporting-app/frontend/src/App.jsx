@@ -170,6 +170,7 @@ export default function App() {
         {/* ── Main content ── */}
         <main className="main-content">
           <ReportCanvas
+            vizType={vizType}
             rowFields={rowFields}
             colFields={colFields}
             valFields={valFields}
