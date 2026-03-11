@@ -573,7 +573,7 @@ const RULES_STORAGE_KEY = "powerreport_rules";
 export default function FilterPanel({
   columns, tableName, data, query, onQueryChange, onRunQuery,
   slicers, onSlicerChange, onAddSlicer, onRemoveSlicer,
-  activeFilterCount, hasDataset, queryLoading, queryError,
+  activeFilterCount, hasDataset, hasViewFields, queryLoading, queryError,
 }) {
   const [open, setOpen] = useState(false);
 
@@ -731,7 +731,7 @@ export default function FilterPanel({
             </div>
           </div>
 
-          {/* ── Slicers ──────────────────────────────────────────────────── */}
+          {/* ── Slicers — only available once columns are in the view ────── */}
           <div>
             <div style={{
               fontSize: 10, fontWeight: 700, color: "#4a7fa5", textTransform: "uppercase",
@@ -743,7 +743,7 @@ export default function FilterPanel({
                   — cross-filtered · values stay in sync
                 </span>
               </span>
-              {availableForSlicer.length > 0 && (
+              {hasViewFields && availableForSlicer.length > 0 && (
                 <select value="" onChange={(e) => { if (e.target.value) onAddSlicer(e.target.value); }}
                   style={{ background: "#0f1e30", border: "1px solid #1e3a5f", borderRadius: 5, color: "#7eb8f7", fontSize: 11, padding: "3px 8px", cursor: "pointer" }}
                 >
@@ -753,7 +753,11 @@ export default function FilterPanel({
               )}
             </div>
 
-            {Object.keys(slicers).length === 0 ? (
+            {!hasViewFields ? (
+              <p style={{ fontSize: 12, color: "#2d4a6a", margin: 0, fontStyle: "italic" }}>
+                Drop columns into the view first to enable slicers.
+              </p>
+            ) : Object.keys(slicers).length === 0 ? (
               <p style={{ fontSize: 12, color: "#2d4a6a", margin: 0 }}>No slicers added. Use "+ Add slicer…" to add one.</p>
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>

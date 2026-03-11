@@ -9,40 +9,62 @@ import FilterPanel from "./components/FilterPanel";
 import { fetchCategories, fetchSchema, fetchData, runQuery } from "./api";
 
 export default function App() {
-  // ── Dataset state ─────────────────────────────────────────────────────────
-  const [categories, setCategories] = useState({});
-  const [selectedCategory, setSelectedCategory] = useState("");
+  // ── Dataset ───────────────────────────────────────────────────────────────
+  const [categories,          setCategories]          = useState({});
+  const [selectedCategory,    setSelectedCategory]    = useState("");
   const [selectedSubcategory, setSelectedSubcategory] = useState("");
-  const [columns, setColumns] = useState([]);
-  const [tableName, setTableName] = useState("");
-  const [schemaLoading, setSchemaLoading] = useState(false);
-  const [schemaError, setSchemaError] = useState("");
+  const [columns,             setColumns]             = useState([]); // full schema — left panel only
+  const [tableName,           setTableName]           = useState("");
+  const [schemaLoading,       setSchemaLoading]       = useState(false);
+  const [schemaError,         setSchemaError]         = useState("");
 
-  // ── Drop zone state ───────────────────────────────────────────────────────
+  // ── Drop zones ────────────────────────────────────────────────────────────
   const [rowFields, setRowFields] = useState([]);
   const [colFields, setColFields] = useState([]);
   const [valFields, setValFields] = useState([]);
 
-  // ── Viz & data state ──────────────────────────────────────────────────────
-  const [vizType, setVizType] = useState("table");
-  const [reportData, setReportData] = useState([]);   // base data (full table or query result)
+  // ── Viz & data ────────────────────────────────────────────────────────────
+  const [vizType,     setVizType]     = useState("table");
+  const [fullData,    setFullData]    = useState([]);
+  const [ruleData,    setRuleData]    = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
-  const [dataError, setDataError] = useState("");
+  const [dataError,   setDataError]   = useState("");
 
-  // ── Filter state ──────────────────────────────────────────────────────────
-  const [query, setQuery] = useState("");
+  // ── Rule / query ──────────────────────────────────────────────────────────
+  const [query,        setQuery]        = useState("");
   const [queryLoading, setQueryLoading] = useState(false);
-  const [queryError, setQueryError] = useState("");
-  const [queryActive, setQueryActive] = useState(false); // true when grid shows query results
+  const [queryError,   setQueryError]   = useState("");
+  const [queryActive,  setQueryActive]  = useState(false);
 
-  // slicers: { [fieldName]: Set<string> }
-  //   empty Set       = no filter (all rows pass)
-  //   Set{"__NONE__"} = user explicitly deselected all (zero rows pass)
-  //   Set{...values}  = only rows matching these values pass
+  // ── Slicers ───────────────────────────────────────────────────────────────
   const [slicers, setSlicers] = useState({});
 
   // ── Drag overlay ──────────────────────────────────────────────────────────
   const [activeId, setActiveId] = useState(null);
+
+  // ── Derived: reportData ───────────────────────────────────────────────────
+  // fullData is always the complete table. When a rule is active, ruleData holds
+  // the filtered rows (possibly fewer columns). reportData merges them — every
+  // matching full row from fullData is returned so all columns are always available.
+  // Set is a lookup index only (O(1) key check), not for deduplication.
+  // Filtering fullData preserves every duplicate row exactly as it exists.
+  const reportData = useMemo(() => {
+    if (!queryActive || ruleData.length === 0) return fullData;
+    if (fullData.length === 0) return ruleData;
+
+    const ruleKeys   = Object.keys(ruleData[0]);
+    const ruleKeySet = new Set(
+      ruleData.map(row => ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+    );
+
+    return fullData.filter(row =>
+      ruleKeySet.has(ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+    );
+  }, [queryActive, ruleData, fullData]);
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const viewFields    = useMemo(() => [...new Set([...rowFields, ...colFields, ...valFields])], [rowFields, colFields, valFields]);
+  const hasViewFields = viewFields.length > 0;
 
   // ── Load categories on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -51,7 +73,9 @@ export default function App() {
       .catch(() => setSchemaError("Failed to load categories from backend."));
   }, []);
 
-  // ── When subcategory changes: fetch schema + ALL data ─────────────────────
+  // ── Dataset change: fetch schema + ALL data together ─────────────────────
+  // Data loads silently in the background. Grid stays empty until user drops
+  // columns — the data is just waiting in memory, not rendered.
   useEffect(() => {
     if (!selectedCategory || !selectedSubcategory) return;
 
@@ -64,7 +88,8 @@ export default function App() {
     setRowFields([]);
     setColFields([]);
     setValFields([]);
-    setReportData([]);
+    setFullData([]);
+    setRuleData([]);
     setQuery("");
     setQueryError("");
     setQueryActive(false);
@@ -77,7 +102,7 @@ export default function App() {
       .then(([schemaRes, dataRes]) => {
         setColumns(schemaRes.columns);
         setTableName(schemaRes.table);
-        setReportData(dataRes.data);
+        setFullData(dataRes.data);
       })
       .catch((err) => {
         const msg = err?.response?.data?.detail || "Failed to load dataset.";
@@ -89,59 +114,50 @@ export default function App() {
       });
   }, [selectedCategory, selectedSubcategory]);
 
-  // ── Manual refresh (reloads full table, clears query) ─────────────────────
+  // ── Manual refresh: reload full table, clear rule ─────────────────────────
   const handleRefreshData = useCallback(() => {
     if (!selectedCategory || !selectedSubcategory) return;
     setDataLoading(true);
     setDataError("");
     setQueryActive(false);
     setQueryError("");
+    setRuleData([]);
     fetchData(selectedCategory, selectedSubcategory)
-      .then((res) => setReportData(res.data))
-      .catch((err) =>
-        setDataError(err?.response?.data?.detail || "Failed to fetch data.")
-      )
+      .then((res) => setFullData(res.data))
+      .catch((err) => setDataError(err?.response?.data?.detail || "Failed to fetch data."))
       .finally(() => setDataLoading(false));
   }, [selectedCategory, selectedSubcategory]);
 
-  // ── Run custom SQL query ──────────────────────────────────────────────────
+  // ── Run / clear a rule ────────────────────────────────────────────────────
+  // Rule replaces reportData with filtered rows from SQL Server.
+  // Clearing a rule reloads the full table.
+  // Drop zones and slicers are preserved — query only changes the row set.
   const handleRunQuery = useCallback((sql) => {
     if (!sql?.trim()) {
-      handleRefreshData();
       setQueryActive(false);
       setQueryError("");
+      setRuleData([]);
+      handleRefreshData();
       return;
     }
     setQueryLoading(true);
     setQueryError("");
     runQuery(sql)
       .then((res) => {
-        setReportData(res.data);
-        if (res.columns?.length) setColumns(res.columns);
+        setRuleData(res.data);   // store rule result separately — fullData untouched
         setQueryActive(true);
         setQueryError("");
-        setRowFields([]);
-        setColFields([]);
-        setValFields([]);
-        setSlicers({});
       })
-      .catch((err) => {
-        const msg = err?.response?.data?.detail || "Query failed.";
-        setQueryError(msg);
-      })
+      .catch((err) => setQueryError(err?.response?.data?.detail || "Query failed."))
       .finally(() => setQueryLoading(false));
   }, [handleRefreshData]);
 
-  // ── Slicer-filtered data ──────────────────────────────────────────────────
-  // Handles three slicer states:
-  //   empty Set       → no filter (all rows pass)
-  //   Set{"__NONE__"} → user deselected everything (zero rows)
-  //   Set{...values}  → keep only rows whose field value is in the set
+  // ── Slicer-filtered display data ──────────────────────────────────────────
   const filteredData = useMemo(() => {
     let result = reportData;
     for (const [field, selected] of Object.entries(slicers)) {
-      if (selected.size === 0) continue;                          // all pass
-      if (selected.has("__NONE__")) return [];                    // deselect all
+      if (selected.size === 0) continue;
+      if (selected.has("__NONE__")) return [];
       result = result.filter(row => selected.has(String(row[field] ?? "")));
     }
     return result;
@@ -150,16 +166,14 @@ export default function App() {
   // ── Active filter count ───────────────────────────────────────────────────
   const activeFilterCount = useMemo(() => {
     let count = queryActive ? 1 : 0;
-    for (const selected of Object.values(slicers)) {
-      if (selected.size > 0) count++;
-    }
+    for (const sel of Object.values(slicers)) if (sel.size > 0) count++;
     return count;
   }, [queryActive, slicers]);
 
   // ── Slicer handlers ───────────────────────────────────────────────────────
-  const handleAddSlicer    = useCallback((field) => setSlicers(p => ({ ...p, [field]: new Set() })), []);
-  const handleSlicerChange = useCallback((field, next) => setSlicers(p => ({ ...p, [field]: next })), []);
-  const handleRemoveSlicer = useCallback((field) => setSlicers(p => { const n = { ...p }; delete n[field]; return n; }), []);
+  const handleAddSlicer    = useCallback((f) => setSlicers(p => ({ ...p, [f]: new Set() })), []);
+  const handleSlicerChange = useCallback((f, v) => setSlicers(p => ({ ...p, [f]: v })), []);
+  const handleRemoveSlicer = useCallback((f) => setSlicers(p => { const n = { ...p }; delete n[f]; return n; }), []);
 
   // ── Drag handlers ─────────────────────────────────────────────────────────
   const handleDragStart = useCallback((e) => setActiveId(e.active.id), []);
@@ -170,19 +184,21 @@ export default function App() {
     if (!over) return;
 
     const fieldId = active.id;
-    const zone = over.id;
-    const remove = (arr) => arr.filter((f) => f !== fieldId);
+    const zone    = over.id;
+    const remove  = (arr) => arr.filter((f) => f !== fieldId);
+
     let newRows = remove(rowFields);
     let newCols = remove(colFields);
     let newVals = remove(valFields);
 
-    if (zone === "rows") newRows = [...newRows, fieldId];
+    if      (zone === "rows")    newRows = [...newRows, fieldId];
     else if (zone === "columns") newCols = [...newCols, fieldId];
-    else if (zone === "values") newVals = [...newVals, fieldId];
+    else if (zone === "values")  newVals = [...newVals, fieldId];
 
     setRowFields(newRows);
     setColFields(newCols);
     setValFields(newVals);
+    // No fetch needed — data already in memory, GridRenderer just shows the new column
   }, [rowFields, colFields, valFields]);
 
   const handleRemoveField = useCallback((zone, field) => {
@@ -191,9 +207,9 @@ export default function App() {
     if (zone === "values")  setValFields(p => p.filter(f => f !== field));
   }, []);
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <DndContext collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      {/* Top bar */}
       <header className="topbar">
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
@@ -202,13 +218,13 @@ export default function App() {
         <div className="topbar-subtitle">Interactive Reporting Studio</div>
         {(dataLoading || queryLoading) && (
           <div className="topbar-loading">
-            <span className="spinner-sm" /> {queryLoading ? "Running query…" : "Loading data…"}
+            <span className="spinner-sm" />
+            {queryLoading ? "Running query…" : "Loading data…"}
           </div>
         )}
       </header>
 
       <div className="app-layout">
-        {/* Left sidebar */}
         <aside className="sidebar">
           <DatasetSelector
             categories={categories}
@@ -224,7 +240,6 @@ export default function App() {
           <FieldsPanel columns={columns} loading={schemaLoading} />
         </aside>
 
-        {/* Main content */}
         <main className="main-content">
           <ReportCanvas
             vizType={vizType}
@@ -237,7 +252,6 @@ export default function App() {
             hasDataset={!!selectedSubcategory}
           />
 
-          {/* Filter & Slicer panel */}
           <div style={{ margin: "8px 0" }}>
             <FilterPanel
               columns={columns}
@@ -252,6 +266,7 @@ export default function App() {
               onRemoveSlicer={handleRemoveSlicer}
               activeFilterCount={activeFilterCount}
               hasDataset={!!selectedSubcategory}
+              hasViewFields={hasViewFields}
               queryLoading={queryLoading}
               queryError={queryError}
             />
@@ -269,6 +284,8 @@ export default function App() {
               valFields={valFields}
               data={filteredData}
               loading={dataLoading}
+              hasDataset={!!selectedSubcategory}
+              hasViewFields={hasViewFields}
             />
           </div>
         </main>
