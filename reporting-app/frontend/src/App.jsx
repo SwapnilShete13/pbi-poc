@@ -35,7 +35,10 @@ export default function App() {
   const [queryError, setQueryError] = useState("");
   const [queryActive, setQueryActive] = useState(false); // true when grid shows query results
 
-  // slicers: { [fieldName]: Set<string> }  — empty Set = "all selected"
+  // slicers: { [fieldName]: Set<string> }
+  //   empty Set       = no filter (all rows pass)
+  //   Set{"__NONE__"} = user explicitly deselected all (zero rows pass)
+  //   Set{...values}  = only rows matching these values pass
   const [slicers, setSlicers] = useState({});
 
   // ── Drag overlay ──────────────────────────────────────────────────────────
@@ -104,7 +107,6 @@ export default function App() {
   // ── Run custom SQL query ──────────────────────────────────────────────────
   const handleRunQuery = useCallback((sql) => {
     if (!sql?.trim()) {
-      // Empty query → reload full table
       handleRefreshData();
       setQueryActive(false);
       setQueryError("");
@@ -115,11 +117,9 @@ export default function App() {
     runQuery(sql)
       .then((res) => {
         setReportData(res.data);
-        // Update columns to match query result columns
         if (res.columns?.length) setColumns(res.columns);
         setQueryActive(true);
         setQueryError("");
-        // Reset field zones since columns may have changed
         setRowFields([]);
         setColFields([]);
         setValFields([]);
@@ -132,13 +132,17 @@ export default function App() {
       .finally(() => setQueryLoading(false));
   }, [handleRefreshData]);
 
-  // ── Slicer-filtered data (client-side on top of reportData) ───────────────
+  // ── Slicer-filtered data ──────────────────────────────────────────────────
+  // Handles three slicer states:
+  //   empty Set       → no filter (all rows pass)
+  //   Set{"__NONE__"} → user deselected everything (zero rows)
+  //   Set{...values}  → keep only rows whose field value is in the set
   const filteredData = useMemo(() => {
     let result = reportData;
     for (const [field, selected] of Object.entries(slicers)) {
-      if (selected.size > 0) {
-        result = result.filter((row) => selected.has(String(row[field] ?? "")));
-      }
+      if (selected.size === 0) continue;                          // all pass
+      if (selected.has("__NONE__")) return [];                    // deselect all
+      result = result.filter(row => selected.has(String(row[field] ?? "")));
     }
     return result;
   }, [reportData, slicers]);
