@@ -1,44 +1,81 @@
-// import React, { useState, useEffect, useCallback } from "react";
+// import React, { useState, useEffect, useCallback, useMemo } from "react";
 // import { DndContext, DragOverlay, closestCenter } from "@dnd-kit/core";
 // import DatasetSelector from "./components/DatasetSelector";
 // import FieldsPanel from "./components/FieldsPanel";
 // import VisualizationTypeSelector from "./components/VisualizationTypeSelector";
 // import ReportCanvas from "./components/ReportCanvas";
 // import GridRenderer from "./components/GridRenderer";
-// import { fetchCategories, fetchSchema, fetchData } from "./api";
+// import FilterPanel from "./components/FilterPanel";
+// import { fetchCategories, fetchSchema, fetchData, runQuery } from "./api";
 
 // export default function App() {
-//   // ── Dataset state ────────────────────────────────────────────────────────────
-//   const [categories, setCategories] = useState({});
-//   const [selectedCategory, setSelectedCategory] = useState("");
+//   // ── Dataset ───────────────────────────────────────────────────────────────
+//   const [categories,          setCategories]          = useState({});
+//   const [selectedCategory,    setSelectedCategory]    = useState("");
 //   const [selectedSubcategory, setSelectedSubcategory] = useState("");
-//   const [columns, setColumns] = useState([]);
-//   const [schemaLoading, setSchemaLoading] = useState(false);
-//   const [schemaError, setSchemaError] = useState("");
+//   const [columns,             setColumns]             = useState([]); // full schema — left panel only
+//   const [tableName,           setTableName]           = useState("");
+//   const [schemaLoading,       setSchemaLoading]       = useState(false);
+//   const [schemaError,         setSchemaError]         = useState("");
 
-//   // ── Drop zone state ──────────────────────────────────────────────────────────
+//   // ── Drop zones ────────────────────────────────────────────────────────────
 //   const [rowFields, setRowFields] = useState([]);
 //   const [colFields, setColFields] = useState([]);
 //   const [valFields, setValFields] = useState([]);
 
-//   // ── Viz & data state ─────────────────────────────────────────────────────────
-//   const [vizType, setVizType] = useState("table");
-//   const [reportData, setReportData] = useState([]);   // all data fetched from API
+//   // ── Viz & data ────────────────────────────────────────────────────────────
+//   const [vizType,     setVizType]     = useState("table");
+//   const [fullData,    setFullData]    = useState([]);
+//   const [ruleData,    setRuleData]    = useState([]);
 //   const [dataLoading, setDataLoading] = useState(false);
-//   const [dataError, setDataError] = useState("");
+//   const [dataError,   setDataError]   = useState("");
 
-//   // ── Drag overlay label ───────────────────────────────────────────────────────
+//   // ── Rule / query ──────────────────────────────────────────────────────────
+//   const [query,        setQuery]        = useState("");
+//   const [queryLoading, setQueryLoading] = useState(false);
+//   const [queryError,   setQueryError]   = useState("");
+//   const [queryActive,  setQueryActive]  = useState(false);
+
+//   // ── Slicers ───────────────────────────────────────────────────────────────
+//   const [slicers, setSlicers] = useState({});
+
+//   // ── Drag overlay ──────────────────────────────────────────────────────────
 //   const [activeId, setActiveId] = useState(null);
 
-//   // ── Load categories on mount ─────────────────────────────────────────────────
+//   // ── Derived: reportData ───────────────────────────────────────────────────
+//   // fullData is always the complete table. When a rule is active, ruleData holds
+//   // the filtered rows (possibly fewer columns). reportData merges them — every
+//   // matching full row from fullData is returned so all columns are always available.
+//   // Set is a lookup index only (O(1) key check), not for deduplication.
+//   // Filtering fullData preserves every duplicate row exactly as it exists.
+//   const reportData = useMemo(() => {
+//     if (!queryActive || ruleData.length === 0) return fullData;
+//     if (fullData.length === 0) return ruleData;
+
+//     const ruleKeys   = Object.keys(ruleData[0]);
+//     const ruleKeySet = new Set(
+//       ruleData.map(row => ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+//     );
+
+//     return fullData.filter(row =>
+//       ruleKeySet.has(ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+//     );
+//   }, [queryActive, ruleData, fullData]);
+
+//   // ── Derived ───────────────────────────────────────────────────────────────
+//   const viewFields    = useMemo(() => [...new Set([...rowFields, ...colFields, ...valFields])], [rowFields, colFields, valFields]);
+//   const hasViewFields = viewFields.length > 0;
+
+//   // ── Load categories on mount ──────────────────────────────────────────────
 //   useEffect(() => {
 //     fetchCategories()
 //       .then(setCategories)
 //       .catch(() => setSchemaError("Failed to load categories from backend."));
 //   }, []);
 
-//   // ── When subcategory changes: fetch schema + ALL data immediately ─────────────
-//   // The grid re-renders reactively as the user drags fields — no button needed.
+//   // ── Dataset change: fetch schema + ALL data together ─────────────────────
+//   // Data loads silently in the background. Grid stays empty until user drops
+//   // columns — the data is just waiting in memory, not rendered.
 //   useEffect(() => {
 //     if (!selectedCategory || !selectedSubcategory) return;
 
@@ -47,19 +84,25 @@
 //     setSchemaError("");
 //     setDataError("");
 //     setColumns([]);
+//     setTableName("");
 //     setRowFields([]);
 //     setColFields([]);
 //     setValFields([]);
-//     setReportData([]);
+//     setFullData([]);
+//     setRuleData([]);
+//     setQuery("");
+//     setQueryError("");
+//     setQueryActive(false);
+//     setSlicers({});
 
-//     // Fetch schema and data in parallel
 //     Promise.all([
 //       fetchSchema(selectedCategory, selectedSubcategory),
 //       fetchData(selectedCategory, selectedSubcategory),
 //     ])
 //       .then(([schemaRes, dataRes]) => {
 //         setColumns(schemaRes.columns);
-//         setReportData(dataRes.data);
+//         setTableName(schemaRes.table);
+//         setFullData(dataRes.data);
 //       })
 //       .catch((err) => {
 //         const msg = err?.response?.data?.detail || "Failed to load dataset.";
@@ -71,103 +114,132 @@
 //       });
 //   }, [selectedCategory, selectedSubcategory]);
 
-//   // ── Manual refresh (re-fetch data, e.g. after backend data changes) ───────────
+//   // ── Manual refresh: reload full table, clear rule ─────────────────────────
 //   const handleRefreshData = useCallback(() => {
 //     if (!selectedCategory || !selectedSubcategory) return;
 //     setDataLoading(true);
 //     setDataError("");
+//     setQueryActive(false);
+//     setQueryError("");
+//     setRuleData([]);
 //     fetchData(selectedCategory, selectedSubcategory)
-//       .then((res) => setReportData(res.data))
-//       .catch((err) =>
-//         setDataError(err?.response?.data?.detail || "Failed to fetch data.")
-//       )
+//       .then((res) => setFullData(res.data))
+//       .catch((err) => setDataError(err?.response?.data?.detail || "Failed to fetch data."))
 //       .finally(() => setDataLoading(false));
 //   }, [selectedCategory, selectedSubcategory]);
 
-//   // ── Drag handlers ─────────────────────────────────────────────────────────────
-//   const handleDragStart = useCallback((event) => {
-//     setActiveId(event.active.id);
-//   }, []);
+//   // ── Run / clear a rule ────────────────────────────────────────────────────
+//   // Rule replaces reportData with filtered rows from SQL Server.
+//   // Clearing a rule reloads the full table.
+//   // Drop zones and slicers are preserved — query only changes the row set.
+//   const handleRunQuery = useCallback((sql) => {
+//     if (!sql?.trim()) {
+//       setQueryActive(false);
+//       setQueryError("");
+//       setRuleData([]);
+//       handleRefreshData();
+//       return;
+//     }
+//     setQueryLoading(true);
+//     setQueryError("");
+//     runQuery(sql)
+//       .then((res) => {
+//         setRuleData(res.data);   // store rule result separately — fullData untouched
+//         setQueryActive(true);
+//         setQueryError("");
+//       })
+//       .catch((err) => setQueryError(err?.response?.data?.detail || "Query failed."))
+//       .finally(() => setQueryLoading(false));
+//   }, [handleRefreshData]);
 
-//   const handleDragEnd = useCallback(
-//     (event) => {
-//       const { active, over } = event;
-//       setActiveId(null);
-//       if (!over) return;
+//   // ── Slicer-filtered display data ──────────────────────────────────────────
+//   const filteredData = useMemo(() => {
+//     let result = reportData;
+//     for (const [field, selected] of Object.entries(slicers)) {
+//       if (selected.size === 0) continue;
+//       if (selected.has("__NONE__")) return [];
+//       result = result.filter(row => selected.has(String(row[field] ?? "")));
+//     }
+//     return result;
+//   }, [reportData, slicers]);
 
-//       const fieldId = active.id;
-//       const zone = over.id; // "rows" | "columns" | "values"
+//   // ── Active filter count ───────────────────────────────────────────────────
+//   const activeFilterCount = useMemo(() => {
+//     let count = queryActive ? 1 : 0;
+//     for (const sel of Object.values(slicers)) if (sel.size > 0) count++;
+//     return count;
+//   }, [queryActive, slicers]);
 
-//       // Remove from all zones first (prevent duplicates across zones)
-//       const remove = (arr) => arr.filter((f) => f !== fieldId);
-//       let newRows = remove(rowFields);
-//       let newCols = remove(colFields);
-//       let newVals = remove(valFields);
+//   // ── Slicer handlers ───────────────────────────────────────────────────────
+//   const handleAddSlicer    = useCallback((f) => setSlicers(p => ({ ...p, [f]: new Set() })), []);
+//   const handleSlicerChange = useCallback((f, v) => setSlicers(p => ({ ...p, [f]: v })), []);
+//   const handleRemoveSlicer = useCallback((f) => setSlicers(p => { const n = { ...p }; delete n[f]; return n; }), []);
 
-//       if (zone === "rows") newRows = [...newRows, fieldId];
-//       else if (zone === "columns") newCols = [...newCols, fieldId];
-//       else if (zone === "values") newVals = [...newVals, fieldId];
+//   // ── Drag handlers ─────────────────────────────────────────────────────────
+//   const handleDragStart = useCallback((e) => setActiveId(e.active.id), []);
 
-//       setRowFields(newRows);
-//       setColFields(newCols);
-//       setValFields(newVals);
-//       // Grid re-renders automatically via GridRenderer's useMemo — no fetch needed
-//     },
-//     [rowFields, colFields, valFields]
-//   );
+//   const handleDragEnd = useCallback((event) => {
+//     const { active, over } = event;
+//     setActiveId(null);
+//     if (!over) return;
 
-//   // ── Remove field from zone ────────────────────────────────────────────────────
+//     const fieldId = active.id;
+//     const zone    = over.id;
+//     const remove  = (arr) => arr.filter((f) => f !== fieldId);
+
+//     let newRows = remove(rowFields);
+//     let newCols = remove(colFields);
+//     let newVals = remove(valFields);
+
+//     if      (zone === "rows")    newRows = [...newRows, fieldId];
+//     else if (zone === "columns") newCols = [...newCols, fieldId];
+//     else if (zone === "values")  newVals = [...newVals, fieldId];
+
+//     setRowFields(newRows);
+//     setColFields(newCols);
+//     setValFields(newVals);
+//     // No fetch needed — data already in memory, GridRenderer just shows the new column
+//   }, [rowFields, colFields, valFields]);
+
 //   const handleRemoveField = useCallback((zone, field) => {
-//     if (zone === "rows") setRowFields((p) => p.filter((f) => f !== field));
-//     else if (zone === "columns") setColFields((p) => p.filter((f) => f !== field));
-//     else if (zone === "values") setValFields((p) => p.filter((f) => f !== field));
+//     if (zone === "rows")    setRowFields(p => p.filter(f => f !== field));
+//     if (zone === "columns") setColFields(p => p.filter(f => f !== field));
+//     if (zone === "values")  setValFields(p => p.filter(f => f !== field));
 //   }, []);
 
+//   // ── Render ────────────────────────────────────────────────────────────────
 //   return (
-//     <DndContext
-//       collisionDetection={closestCenter}
-//       onDragStart={handleDragStart}
-//       onDragEnd={handleDragEnd}
-//     >
-//       {/* ── Top bar ── */}
+//     <DndContext collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
 //       <header className="topbar">
 //         <div className="topbar-brand">
 //           <span className="brand-icon">⚡</span>
 //           <span className="brand-name">PowerReport</span>
 //         </div>
 //         <div className="topbar-subtitle">Interactive Reporting Studio</div>
-//         {dataLoading && (
+//         {(dataLoading || queryLoading) && (
 //           <div className="topbar-loading">
-//             <span className="spinner-sm" /> Loading data…
+//             <span className="spinner-sm" />
+//             {queryLoading ? "Running query…" : "Loading data…"}
 //           </div>
 //         )}
 //       </header>
 
 //       <div className="app-layout">
-//         {/* ── Left sidebar ── */}
 //         <aside className="sidebar">
 //           <DatasetSelector
 //             categories={categories}
 //             selectedCategory={selectedCategory}
 //             selectedSubcategory={selectedSubcategory}
-//             onCategoryChange={(cat) => {
-//               setSelectedCategory(cat);
-//               setSelectedSubcategory("");
-//             }}
+//             onCategoryChange={(cat) => { setSelectedCategory(cat); setSelectedSubcategory(""); }}
 //             onSubcategoryChange={setSelectedSubcategory}
 //           />
-
 //           <div className="sidebar-divider" />
-
 //           <VisualizationTypeSelector vizType={vizType} onChange={setVizType} />
-
 //           <div className="sidebar-divider" />
-
 //           {schemaError && <div className="error-banner">{schemaError}</div>}
 //           <FieldsPanel columns={columns} loading={schemaLoading} />
 //         </aside>
 
-//         {/* ── Main content ── */}
 //         <main className="main-content">
 //           <ReportCanvas
 //             vizType={vizType}
@@ -180,10 +252,28 @@
 //             hasDataset={!!selectedSubcategory}
 //           />
 
+//           <div style={{ margin: "8px 0" }}>
+//             <FilterPanel
+//               columns={columns}
+//               tableName={tableName}
+//               data={reportData}
+//               query={query}
+//               onQueryChange={setQuery}
+//               onRunQuery={handleRunQuery}
+//               slicers={slicers}
+//               onSlicerChange={handleSlicerChange}
+//               onAddSlicer={handleAddSlicer}
+//               onRemoveSlicer={handleRemoveSlicer}
+//               activeFilterCount={activeFilterCount}
+//               hasDataset={!!selectedSubcategory}
+//               hasViewFields={hasViewFields}
+//               queryLoading={queryLoading}
+//               queryError={queryError}
+//             />
+//           </div>
+
 //           {dataError && (
-//             <div className="error-banner" style={{ margin: "0 16px" }}>
-//               {dataError}
-//             </div>
+//             <div className="error-banner" style={{ margin: "0 0 8px 0" }}>{dataError}</div>
 //           )}
 
 //           <div className="grid-area">
@@ -192,19 +282,17 @@
 //               rowFields={rowFields}
 //               colFields={colFields}
 //               valFields={valFields}
-//               data={reportData}
+//               data={filteredData}
 //               loading={dataLoading}
+//               hasDataset={!!selectedSubcategory}
+//               hasViewFields={hasViewFields}
 //             />
-            
 //           </div>
 //         </main>
 //       </div>
 
-//       {/* ── Drag Overlay ── */}
 //       <DragOverlay>
-//         {activeId ? (
-//           <div className="field-chip dragging-overlay">{activeId}</div>
-//         ) : null}
+//         {activeId ? <div className="field-chip dragging-overlay">{activeId}</div> : null}
 //       </DragOverlay>
 //     </DndContext>
 //   );
@@ -216,36 +304,69 @@ import FieldsPanel from "./components/FieldsPanel";
 import VisualizationTypeSelector from "./components/VisualizationTypeSelector";
 import ReportCanvas from "./components/ReportCanvas";
 import GridRenderer from "./components/GridRenderer";
-import FilterPanel, { evaluateQuery } from "./components/FilterPanel";
-import { fetchCategories, fetchSchema, fetchData } from "./api";
+import FilterPanel from "./components/FilterPanel";
+import { fetchCategories, fetchSchema, fetchData, runQuery } from "./api";
 
 export default function App() {
-  // ── Dataset state ─────────────────────────────────────────────────────────
-  const [categories, setCategories] = useState({});
-  const [selectedCategory, setSelectedCategory] = useState("");
+  // ── Dataset ───────────────────────────────────────────────────────────────
+  const [categories,          setCategories]          = useState({});
+  const [selectedCategory,    setSelectedCategory]    = useState("");
   const [selectedSubcategory, setSelectedSubcategory] = useState("");
-  const [columns, setColumns] = useState([]);
-  const [schemaLoading, setSchemaLoading] = useState(false);
-  const [schemaError, setSchemaError] = useState("");
+  const [columns,             setColumns]             = useState([]);
+  const [tableName,           setTableName]           = useState("");
+  const [schemaLoading,       setSchemaLoading]       = useState(false);
+  const [schemaError,         setSchemaError]         = useState("");
 
-  // ── Drop zone state ───────────────────────────────────────────────────────
+  // ── Drop zones ────────────────────────────────────────────────────────────
   const [rowFields, setRowFields] = useState([]);
   const [colFields, setColFields] = useState([]);
   const [valFields, setValFields] = useState([]);
 
-  // ── Viz & data state ──────────────────────────────────────────────────────
-  const [vizType, setVizType] = useState("table");
-  const [reportData, setReportData] = useState([]);
+  // ── Viz & data ────────────────────────────────────────────────────────────
+  const [vizType,     setVizType]     = useState("table");
+  const [fullData,    setFullData]    = useState([]);
+  const [ruleData,    setRuleData]    = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
-  const [dataError, setDataError] = useState("");
+  const [dataError,   setDataError]   = useState("");
 
-  // ── Filter state ──────────────────────────────────────────────────────────
-  const [query, setQuery] = useState("");
-  // slicers: { [fieldName]: Set<string> }  — empty Set = all selected
+  // ── Totals toggle ─────────────────────────────────────────────────────────
+  const [showTotals, setShowTotals] = useState(false);
+
+  // ── Rule / query ──────────────────────────────────────────────────────────
+  const [query,        setQuery]        = useState("");
+  const [queryLoading, setQueryLoading] = useState(false);
+  const [queryError,   setQueryError]   = useState("");
+  const [queryActive,  setQueryActive]  = useState(false);
+
+  // ── Slicers ───────────────────────────────────────────────────────────────
   const [slicers, setSlicers] = useState({});
 
   // ── Drag overlay ──────────────────────────────────────────────────────────
   const [activeId, setActiveId] = useState(null);
+
+  // ── Derived: reportData ───────────────────────────────────────────────────
+  // fullData is always the complete table. When a rule is active, ruleData holds
+  // the filtered rows (possibly fewer columns). reportData merges them — every
+  // matching full row from fullData is returned so all columns are always available.
+  // Set is a lookup index only (O(1) key check), not for deduplication.
+  // Filtering fullData preserves every duplicate row exactly as it exists.
+  const reportData = useMemo(() => {
+    if (!queryActive || ruleData.length === 0) return fullData;
+    if (fullData.length === 0) return ruleData;
+
+    const ruleKeys   = Object.keys(ruleData[0]);
+    const ruleKeySet = new Set(
+      ruleData.map(row => ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+    );
+
+    return fullData.filter(row =>
+      ruleKeySet.has(ruleKeys.map(k => String(row[k] ?? "")).join("||"))
+    );
+  }, [queryActive, ruleData, fullData]);
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const viewFields    = useMemo(() => [...new Set([...rowFields, ...colFields, ...valFields])], [rowFields, colFields, valFields]);
+  const hasViewFields = viewFields.length > 0;
 
   // ── Load categories on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -254,7 +375,7 @@ export default function App() {
       .catch(() => setSchemaError("Failed to load categories from backend."));
   }, []);
 
-  // ── When subcategory changes: fetch schema + data ─────────────────────────
+  // ── Dataset change: fetch schema + ALL data together ─────────────────────
   useEffect(() => {
     if (!selectedCategory || !selectedSubcategory) return;
 
@@ -263,12 +384,17 @@ export default function App() {
     setSchemaError("");
     setDataError("");
     setColumns([]);
+    setTableName("");
     setRowFields([]);
     setColFields([]);
     setValFields([]);
-    setReportData([]);
+    setFullData([]);
+    setRuleData([]);
     setQuery("");
+    setQueryError("");
+    setQueryActive(false);
     setSlicers({});
+    setShowTotals(false);
 
     Promise.all([
       fetchSchema(selectedCategory, selectedSubcategory),
@@ -276,7 +402,8 @@ export default function App() {
     ])
       .then(([schemaRes, dataRes]) => {
         setColumns(schemaRes.columns);
-        setReportData(dataRes.data);
+        setTableName(schemaRes.table);
+        setFullData(dataRes.data);
       })
       .catch((err) => {
         const msg = err?.response?.data?.detail || "Failed to load dataset.";
@@ -293,143 +420,123 @@ export default function App() {
     if (!selectedCategory || !selectedSubcategory) return;
     setDataLoading(true);
     setDataError("");
+    setQueryActive(false);
+    setQueryError("");
+    setRuleData([]);
     fetchData(selectedCategory, selectedSubcategory)
-      .then((res) => setReportData(res.data))
-      .catch((err) =>
-        setDataError(err?.response?.data?.detail || "Failed to fetch data.")
-      )
+      .then((res) => setFullData(res.data))
+      .catch((err) => setDataError(err?.response?.data?.detail || "Failed to fetch data."))
       .finally(() => setDataLoading(false));
   }, [selectedCategory, selectedSubcategory]);
 
-  // ── Filtered data (query + slicers applied) ───────────────────────────────
+  // ── Run / clear a rule ────────────────────────────────────────────────────
+  const handleRunQuery = useCallback((sql) => {
+    if (!sql?.trim()) {
+      setQueryActive(false);
+      setQueryError("");
+      setRuleData([]);
+      handleRefreshData();
+      return;
+    }
+    setQueryLoading(true);
+    setQueryError("");
+    runQuery(sql)
+      .then((res) => {
+        setRuleData(res.data);
+        setQueryActive(true);
+        setQueryError("");
+      })
+      .catch((err) => setQueryError(err?.response?.data?.detail || "Query failed."))
+      .finally(() => setQueryLoading(false));
+  }, [handleRefreshData]);
+
+  // ── Slicer-filtered display data ──────────────────────────────────────────
   const filteredData = useMemo(() => {
     let result = reportData;
-
-    // Apply query filter
-    if (query.trim()) {
-      const queried = evaluateQuery(result, query);
-      if (queried !== null) result = queried;
-    }
-
-    // Apply slicers — only when a slicer has explicit selections (non-empty Set)
     for (const [field, selected] of Object.entries(slicers)) {
-      if (selected.size > 0) {
-        result = result.filter((row) => selected.has(String(row[field] ?? "")));
-      }
+      if (selected.size === 0) continue;
+      if (selected.has("__NONE__")) return [];
+      result = result.filter(row => selected.has(String(row[field] ?? "")));
     }
-
     return result;
-  }, [reportData, query, slicers]);
+  }, [reportData, slicers]);
 
-  // ── Active filter count (for badge) ──────────────────────────────────────
+  // ── Active filter count ───────────────────────────────────────────────────
   const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (query.trim()) count++;
-    for (const selected of Object.values(slicers)) {
-      if (selected.size > 0) count++;
-    }
+    let count = queryActive ? 1 : 0;
+    for (const sel of Object.values(slicers)) if (sel.size > 0) count++;
     return count;
-  }, [query, slicers]);
+  }, [queryActive, slicers]);
 
   // ── Slicer handlers ───────────────────────────────────────────────────────
-  const handleAddSlicer = useCallback((field) => {
-    setSlicers((prev) => ({ ...prev, [field]: new Set() }));
-  }, []);
-
-  const handleSlicerChange = useCallback((field, next) => {
-    setSlicers((prev) => ({ ...prev, [field]: next }));
-  }, []);
-
-  const handleRemoveSlicer = useCallback((field) => {
-    setSlicers((prev) => {
-      const next = { ...prev };
-      delete next[field];
-      return next;
-    });
-  }, []);
+  const handleAddSlicer    = useCallback((f) => setSlicers(p => ({ ...p, [f]: new Set() })), []);
+  const handleSlicerChange = useCallback((f, v) => setSlicers(p => ({ ...p, [f]: v })), []);
+  const handleRemoveSlicer = useCallback((f) => setSlicers(p => { const n = { ...p }; delete n[f]; return n; }), []);
 
   // ── Drag handlers ─────────────────────────────────────────────────────────
-  const handleDragStart = useCallback((event) => {
-    setActiveId(event.active.id);
-  }, []);
+  const handleDragStart = useCallback((e) => setActiveId(e.active.id), []);
 
-  const handleDragEnd = useCallback(
-    (event) => {
-      const { active, over } = event;
-      setActiveId(null);
-      if (!over) return;
+  const handleDragEnd = useCallback((event) => {
+    const { active, over } = event;
+    setActiveId(null);
+    if (!over) return;
 
-      const fieldId = active.id;
-      const zone = over.id;
+    const fieldId = active.id;
+    const zone    = over.id;
+    const remove  = (arr) => arr.filter((f) => f !== fieldId);
 
-      const remove = (arr) => arr.filter((f) => f !== fieldId);
-      let newRows = remove(rowFields);
-      let newCols = remove(colFields);
-      let newVals = remove(valFields);
+    let newRows = remove(rowFields);
+    let newCols = remove(colFields);
+    let newVals = remove(valFields);
 
-      if (zone === "rows") newRows = [...newRows, fieldId];
-      else if (zone === "columns") newCols = [...newCols, fieldId];
-      else if (zone === "values") newVals = [...newVals, fieldId];
+    if      (zone === "rows")    newRows = [...newRows, fieldId];
+    else if (zone === "columns") newCols = [...newCols, fieldId];
+    else if (zone === "values")  newVals = [...newVals, fieldId];
 
-      setRowFields(newRows);
-      setColFields(newCols);
-      setValFields(newVals);
-    },
-    [rowFields, colFields, valFields]
-  );
+    setRowFields(newRows);
+    setColFields(newCols);
+    setValFields(newVals);
+  }, [rowFields, colFields, valFields]);
 
-  // ── Remove field from zone ────────────────────────────────────────────────
   const handleRemoveField = useCallback((zone, field) => {
-    if (zone === "rows") setRowFields((p) => p.filter((f) => f !== field));
-    else if (zone === "columns") setColFields((p) => p.filter((f) => f !== field));
-    else if (zone === "values") setValFields((p) => p.filter((f) => f !== field));
+    if (zone === "rows")    setRowFields(p => p.filter(f => f !== field));
+    if (zone === "columns") setColFields(p => p.filter(f => f !== field));
+    if (zone === "values")  setValFields(p => p.filter(f => f !== field));
   }, []);
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <DndContext
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      {/* ── Top bar ── */}
+    <DndContext collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <header className="topbar">
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
           <span className="brand-name">PowerReport</span>
         </div>
         <div className="topbar-subtitle">Interactive Reporting Studio</div>
-        {dataLoading && (
+        {(dataLoading || queryLoading) && (
           <div className="topbar-loading">
-            <span className="spinner-sm" /> Loading data…
+            <span className="spinner-sm" />
+            {queryLoading ? "Running query…" : "Loading data…"}
           </div>
         )}
       </header>
 
       <div className="app-layout">
-        {/* ── Left sidebar ── */}
         <aside className="sidebar">
           <DatasetSelector
             categories={categories}
             selectedCategory={selectedCategory}
             selectedSubcategory={selectedSubcategory}
-            onCategoryChange={(cat) => {
-              setSelectedCategory(cat);
-              setSelectedSubcategory("");
-            }}
+            onCategoryChange={(cat) => { setSelectedCategory(cat); setSelectedSubcategory(""); }}
             onSubcategoryChange={setSelectedSubcategory}
           />
-
           <div className="sidebar-divider" />
-
           <VisualizationTypeSelector vizType={vizType} onChange={setVizType} />
-
           <div className="sidebar-divider" />
-
           {schemaError && <div className="error-banner">{schemaError}</div>}
           <FieldsPanel columns={columns} loading={schemaLoading} />
         </aside>
 
-        {/* ── Main content ── */}
         <main className="main-content">
           <ReportCanvas
             vizType={vizType}
@@ -440,28 +547,33 @@ export default function App() {
             onRefresh={handleRefreshData}
             loading={dataLoading}
             hasDataset={!!selectedSubcategory}
+            showTotals={showTotals}
+            onToggleTotals={() => setShowTotals(v => !v)}
+            hasViewFields={hasViewFields}
           />
 
-          {/* ── Filter & Slicer panel ── */}
-          <div style={{ padding: "0 0 0 0", margin: "8px 0" }}>
+          <div style={{ margin: "8px 0" }}>
             <FilterPanel
               columns={columns}
+              tableName={tableName}
               data={reportData}
               query={query}
               onQueryChange={setQuery}
+              onRunQuery={handleRunQuery}
               slicers={slicers}
               onSlicerChange={handleSlicerChange}
               onAddSlicer={handleAddSlicer}
               onRemoveSlicer={handleRemoveSlicer}
               activeFilterCount={activeFilterCount}
               hasDataset={!!selectedSubcategory}
+              hasViewFields={hasViewFields}
+              queryLoading={queryLoading}
+              queryError={queryError}
             />
           </div>
 
           {dataError && (
-            <div className="error-banner" style={{ margin: "0 16px" }}>
-              {dataError}
-            </div>
+            <div className="error-banner" style={{ margin: "0 0 8px 0" }}>{dataError}</div>
           )}
 
           <div className="grid-area">
@@ -472,16 +584,16 @@ export default function App() {
               valFields={valFields}
               data={filteredData}
               loading={dataLoading}
+              hasDataset={!!selectedSubcategory}
+              hasViewFields={hasViewFields}
+              showTotals={showTotals}
             />
           </div>
         </main>
       </div>
 
-      {/* ── Drag Overlay ── */}
       <DragOverlay>
-        {activeId ? (
-          <div className="field-chip dragging-overlay">{activeId}</div>
-        ) : null}
+        {activeId ? <div className="field-chip dragging-overlay">{activeId}</div> : null}
       </DragOverlay>
     </DndContext>
   );
