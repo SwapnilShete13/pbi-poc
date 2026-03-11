@@ -1,140 +1,15 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
-// ── SQL-like query evaluator ──────────────────────────────────────────────────
-// Supports: =, !=, >, <, >=, <=, LIKE, IN, AND, OR, NOT, IS NULL, IS NOT NULL
-export function evaluateQuery(data, query) {
-  if (!query.trim()) return data;
-  try {
-    const filtered = data.filter((row) => evalExpr(query.trim(), row));
-    return filtered;
-  } catch {
-    return null; // parse error
-  }
-}
-
-function evalExpr(expr, row) {
-  expr = expr.trim();
-
-  // Strip outer parens
-  if (expr.startsWith("(") && matchingParen(expr) === expr.length - 1) {
-    expr = expr.slice(1, -1).trim();
-  }
-
-  // OR (lowest precedence)
-  const orIdx = findLogicalOp(expr, "OR");
-  if (orIdx !== -1) {
-    return evalExpr(expr.slice(0, orIdx).trim(), row) ||
-           evalExpr(expr.slice(orIdx + 2).trim(), row);
-  }
-
-  // AND
-  const andIdx = findLogicalOp(expr, "AND");
-  if (andIdx !== -1) {
-    return evalExpr(expr.slice(0, andIdx).trim(), row) &&
-           evalExpr(expr.slice(andIdx + 3).trim(), row);
-  }
-
-  // NOT
-  if (/^NOT\s+/i.test(expr)) {
-    return !evalExpr(expr.replace(/^NOT\s+/i, "").trim(), row);
-  }
-
-  // IS NULL / IS NOT NULL
-  const isNullMatch = expr.match(/^(\w+)\s+IS\s+(NOT\s+)?NULL$/i);
-  if (isNullMatch) {
-    const val = row[isNullMatch[1]];
-    const isNull = val === null || val === undefined || val === "";
-    return isNullMatch[2] ? !isNull : isNull;
-  }
-
-  // IN (val1, val2, ...)
-  const inMatch = expr.match(/^(\w+)\s+(NOT\s+)?IN\s*\((.+)\)$/i);
-  if (inMatch) {
-    const field = inMatch[1];
-    const negate = !!inMatch[2];
-    const vals = inMatch[3].split(",").map((v) =>
-      v.trim().replace(/^['"]|['"]$/g, "").toLowerCase()
-    );
-    const rowVal = String(row[field] ?? "").toLowerCase();
-    const found = vals.includes(rowVal);
-    return negate ? !found : found;
-  }
-
-  // LIKE
-  const likeMatch = expr.match(/^(\w+)\s+(NOT\s+)?LIKE\s+['"](.+)['"]/i);
-  if (likeMatch) {
-    const field = likeMatch[1];
-    const negate = !!likeMatch[2];
-    const pattern = likeMatch[3].replace(/%/g, ".*").replace(/_/g, ".");
-    const re = new RegExp(`^${pattern}$`, "i");
-    const found = re.test(String(row[field] ?? ""));
-    return negate ? !found : found;
-  }
-
-  // Comparison: field OP value
-  const cmpMatch = expr.match(/^(\w+)\s*(>=|<=|!=|<>|>|<|=)\s*(.+)$/i);
-  if (cmpMatch) {
-    const field = cmpMatch[1];
-    const op = cmpMatch[2];
-    let rhs = cmpMatch[3].trim().replace(/^['"]|['"]$/g, "");
-    let lhs = row[field];
-
-    // Try numeric comparison
-    const rhsNum = Number(rhs);
-    const lhsNum = Number(lhs);
-    if (!isNaN(rhsNum) && !isNaN(lhsNum)) {
-      lhs = lhsNum; rhs = rhsNum;
-    } else {
-      lhs = String(lhs ?? "").toLowerCase();
-      rhs = rhs.toLowerCase();
-    }
-
-    switch (op) {
-      case "=":  return lhs == rhs;
-      case "!=":
-      case "<>": return lhs != rhs;
-      case ">":  return lhs > rhs;
-      case "<":  return lhs < rhs;
-      case ">=": return lhs >= rhs;
-      case "<=": return lhs <= rhs;
-    }
-  }
-
-  return true;
-}
-
-function findLogicalOp(expr, op) {
-  let depth = 0;
-  const upper = expr.toUpperCase();
-  for (let i = 0; i < expr.length; i++) {
-    if (expr[i] === "(") depth++;
-    else if (expr[i] === ")") depth--;
-    else if (depth === 0 && upper.startsWith(op, i)) {
-      const before = i === 0 || /\s/.test(expr[i - 1]);
-      const after = /\s/.test(expr[i + op.length]);
-      if (before && after) return i;
-    }
-  }
-  return -1;
-}
-
-function matchingParen(expr) {
-  let depth = 0;
-  for (let i = 0; i < expr.length; i++) {
-    if (expr[i] === "(") depth++;
-    else if (expr[i] === ")") { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
-
-// ── Slicer component ──────────────────────────────────────────────────────────
+// ── Slicer (client-side on loaded data) ──────────────────────────────────────
 function Slicer({ field, allValues, selected, onChange, onRemove }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const allSelected = selected.size === 0 || selected.size === allValues.length;
 
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -146,9 +21,7 @@ function Slicer({ field, allValues, selected, onChange, onRemove }) {
     onChange(next);
   };
 
-  const toggleAll = () => {
-    onChange(allSelected ? new Set(allValues) : new Set());
-  };
+  const toggleAll = () => onChange(allSelected ? new Set(allValues) : new Set());
 
   const label = allSelected
     ? "All"
@@ -157,97 +30,66 @@ function Slicer({ field, allValues, selected, onChange, onRemove }) {
     : `${selected.size} selected`;
 
   return (
-    <div ref={ref} style={{ position: "relative", minWidth: 160 }}>
-      {/* Header */}
+    <div ref={ref} style={{ position: "relative" }}>
+      {/* Field label + remove */}
       <div style={{
         fontSize: 10, fontWeight: 700, color: "#4a7fa5",
         textTransform: "uppercase", letterSpacing: "0.06em",
-        marginBottom: 4,
+        marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center",
       }}>
-        {field.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
-        <button
-          onClick={onRemove}
-          style={{
-            float: "right", background: "none", border: "none",
-            color: "#4a7fa5", cursor: "pointer", fontSize: 13, lineHeight: 1,
-          }}
-          title="Remove slicer"
-        >×</button>
+        <span>{field.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}</span>
+        <button onClick={onRemove} style={{
+          background: "none", border: "none", color: "#4a7fa5",
+          cursor: "pointer", fontSize: 14, lineHeight: 1,
+        }}>×</button>
       </div>
 
-      {/* Trigger */}
-      <button
-        onClick={() => setOpen(v => !v)}
-        style={{
-          width: "100%", display: "flex", alignItems: "center",
-          justifyContent: "space-between",
-          background: "#0f1e30", border: "1px solid #1e3a5f",
-          borderRadius: 6, padding: "6px 10px",
-          color: allSelected ? "#4a7fa5" : "#90c8ff",
-          fontSize: 12, cursor: "pointer",
-          fontWeight: allSelected ? 400 : 600,
-        }}
-      >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {label}
-        </span>
-        <span style={{ marginLeft: 6, fontSize: 10, flexShrink: 0 }}>
-          {open ? "▲" : "▼"}
-        </span>
+      {/* Trigger button */}
+      <button onClick={() => setOpen(v => !v)} style={{
+        width: "100%", display: "flex", alignItems: "center",
+        justifyContent: "space-between",
+        background: "#0f1e30", border: "1px solid #1e3a5f",
+        borderRadius: 6, padding: "6px 10px",
+        color: allSelected ? "#4a7fa5" : "#90c8ff",
+        fontSize: 12, cursor: "pointer", fontWeight: allSelected ? 400 : 600,
+      }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        <span style={{ marginLeft: 6, fontSize: 10, flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
       </button>
 
       {/* Dropdown */}
       {open && (
         <div style={{
-          position: "absolute", top: "calc(100% + 4px)", left: 0,
-          zIndex: 1000, background: "#0a1929",
-          border: "1px solid #1e3a5f", borderRadius: 8,
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 1000,
+          background: "#0a1929", border: "1px solid #1e3a5f", borderRadius: 8,
           boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-          minWidth: "100%", maxHeight: 220, overflowY: "auto",
-          padding: "4px 0",
+          minWidth: "100%", maxHeight: 220, overflowY: "auto", padding: "4px 0",
         }}>
           {/* Select All */}
           <label style={{
-            display: "flex", alignItems: "center", gap: 8,
-            padding: "7px 12px", cursor: "pointer",
-            borderBottom: "1px solid #1a2e45",
+            display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
+            cursor: "pointer", borderBottom: "1px solid #1a2e45",
             fontSize: 12, color: "#7eb8f7", fontWeight: 700,
           }}>
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
-              style={{ accentColor: "#2d6aad", width: 14, height: 14 }}
-            />
+            <input type="checkbox" checked={allSelected} onChange={toggleAll}
+              style={{ accentColor: "#2d6aad", width: 14, height: 14 }} />
             Select All
           </label>
 
-          {/* Values */}
           {allValues.map((v) => {
             const checked = allSelected ? true : selected.has(v);
             return (
-              <label
-                key={v}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "6px 12px", cursor: "pointer",
-                  fontSize: 12,
-                  color: checked ? "#c8e0ff" : "#5a7a9a",
-                  background: "transparent",
-                  transition: "background 0.1s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#0f1e30")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              <label key={v} style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 12px", cursor: "pointer", fontSize: 12,
+                color: checked ? "#c8e0ff" : "#5a7a9a",
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = "#0f1e30"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
               >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleVal(v)}
-                  style={{ accentColor: "#2d6aad", width: 14, height: 14 }}
-                />
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {v}
-                </span>
+                <input type="checkbox" checked={checked} onChange={() => toggleVal(v)}
+                  style={{ accentColor: "#2d6aad", width: 14, height: 14 }} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v}</span>
               </label>
             );
           })}
@@ -257,130 +99,198 @@ function Slicer({ field, allValues, selected, onChange, onRemove }) {
   );
 }
 
-// ── Query input with autocomplete ─────────────────────────────────────────────
-function QueryInput({ value, onChange, columns, error }) {
+// ── SQL Query Editor with autocomplete ───────────────────────────────────────
+function QueryEditor({ value, onChange, onRun, columns, tableName, error, loading }) {
   const [suggestions, setSuggestions] = useState([]);
   const [sugIdx, setSugIdx] = useState(-1);
-  const inputRef = useRef(null);
+  const textareaRef = useRef(null);
 
-  const KEYWORDS = ["AND", "OR", "NOT", "IN", "LIKE", "IS NULL", "IS NOT NULL", "NULL"];
-  const OPERATORS = ["=", "!=", ">", "<", ">=", "<="];
+  const SQL_KEYWORDS = [
+    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "LIKE", "IS", "NULL",
+    "IS NULL", "IS NOT NULL", "BETWEEN", "GROUP BY", "ORDER BY", "HAVING",
+    "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "ON", "AS", "DISTINCT",
+    "TOP", "CASE", "WHEN", "THEN", "ELSE", "END",
+    "SUM", "AVG", "MIN", "MAX", "COUNT",
+    "CAST", "CONVERT", "YEAR", "MONTH", "DAY", "DATEPART", "DATEDIFF",
+    "DATEADD", "GETDATE", "FORMAT", "ISNULL", "COALESCE",
+    "UPPER", "LOWER", "LEN", "TRIM", "SUBSTRING", "REPLACE",
+    "ASC", "DESC", "WITH", "CTE",
+  ];
 
-  const updateSuggestions = useCallback((val) => {
-    const lastToken = val.split(/\s+/).pop();
-    if (!lastToken) { setSuggestions([]); return; }
+  const getLastToken = (val, cursorPos) => {
+    const textUpToCursor = val.slice(0, cursorPos);
+    const match = textUpToCursor.match(/[\w.]+$/);
+    return match ? match[0] : "";
+  };
 
-    const upper = lastToken.toUpperCase();
-    const colMatches = columns.filter(c => c.toUpperCase().startsWith(upper) && c !== lastToken);
-    const kwMatches = KEYWORDS.filter(k => k.startsWith(upper) && k !== upper);
-    const all = [...colMatches, ...kwMatches].slice(0, 8);
-    setSuggestions(all);
+  const updateSuggestions = useCallback((val, cursorPos) => {
+    const token = getLastToken(val, cursorPos ?? val.length);
+    if (!token || token.length < 1) { setSuggestions([]); return; }
+    const upper = token.toUpperCase();
+    const colMatches = columns.filter(c => c.toUpperCase().startsWith(upper) && c.toUpperCase() !== upper);
+    const kwMatches = SQL_KEYWORDS.filter(k => k.startsWith(upper) && k !== upper);
+    const tableMatch = tableName && tableName.toUpperCase().startsWith(upper) && tableName.toUpperCase() !== upper
+      ? [tableName] : [];
+    setSuggestions([...colMatches, ...tableMatch, ...kwMatches].slice(0, 12));
     setSugIdx(-1);
-  }, [columns]);
+  }, [columns, tableName]);
 
   const applySuggestion = (sug) => {
-    const parts = value.split(/\s+/);
-    parts[parts.length - 1] = sug;
-    onChange(parts.join(" ") + " ");
+    const pos = textareaRef.current?.selectionStart ?? value.length;
+    const token = getLastToken(value, pos);
+    const newVal = value.slice(0, pos - token.length) + sug + value.slice(pos);
+    onChange(newVal);
     setSuggestions([]);
-    inputRef.current?.focus();
+    setTimeout(() => {
+      const newPos = pos - token.length + sug.length;
+      textareaRef.current?.setSelectionRange(newPos, newPos);
+      textareaRef.current?.focus();
+    }, 0);
   };
 
   return (
     <div style={{ position: "relative" }}>
-      <div style={{ position: "relative" }}>
-        <input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => { onChange(e.target.value); updateSuggestions(e.target.value); }}
-          onKeyDown={(e) => {
-            if (!suggestions.length) return;
-            if (e.key === "ArrowDown") { e.preventDefault(); setSugIdx(i => Math.min(i + 1, suggestions.length - 1)); }
-            else if (e.key === "ArrowUp") { e.preventDefault(); setSugIdx(i => Math.max(i - 1, -1)); }
-            else if (e.key === "Enter" && sugIdx >= 0) { e.preventDefault(); applySuggestion(suggestions[sugIdx]); }
-            else if (e.key === "Escape") setSuggestions([]);
-            else if (e.key === "Tab" && suggestions.length) { e.preventDefault(); applySuggestion(suggestions[Math.max(sugIdx, 0)]); }
-          }}
-          onBlur={() => setTimeout(() => setSuggestions([]), 150)}
-          placeholder='e.g.  status = "paid"  AND  total_amount > 1000'
-          spellCheck={false}
-          style={{
-            width: "100%",
-            background: "#0a1929",
-            border: `1px solid ${error ? "#e05555" : value.trim() ? "#2d6aad" : "#1a2e45"}`,
-            borderRadius: 8,
-            color: "#c8e0ff",
-            fontSize: 13,
-            fontFamily: "'Fira Code', 'Cascadia Code', monospace",
-            padding: "9px 36px 9px 12px",
-            outline: "none",
-            letterSpacing: "0.02em",
-            boxSizing: "border-box",
-            transition: "border-color 0.2s",
-          }}
-        />
-        {value && (
-          <button
-            onClick={() => { onChange(""); setSuggestions([]); }}
-            style={{
-              position: "absolute", right: 8, top: "50%",
-              transform: "translateY(-50%)",
-              background: "none", border: "none",
-              color: "#4a7fa5", cursor: "pointer", fontSize: 16,
+      <div style={{ display: "flex", gap: 8 }}>
+        {/* Editor */}
+        <div style={{ flex: 1, position: "relative" }}>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            rows={4}
+            onChange={(e) => {
+              onChange(e.target.value);
+              updateSuggestions(e.target.value, e.target.selectionStart);
             }}
-          >×</button>
-        )}
+            onClick={(e) => updateSuggestions(e.target.value, e.target.selectionStart)}
+            onKeyDown={(e) => {
+              if (suggestions.length) {
+                if (e.key === "ArrowDown") { e.preventDefault(); setSugIdx(i => Math.min(i + 1, suggestions.length - 1)); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setSugIdx(i => Math.max(i - 1, 0)); return; }
+                if (e.key === "Tab") { e.preventDefault(); applySuggestion(suggestions[Math.max(sugIdx, 0)]); return; }
+                if (e.key === "Escape") { setSuggestions([]); return; }
+                if (e.key === "Enter" && sugIdx >= 0) { e.preventDefault(); applySuggestion(suggestions[sugIdx]); return; }
+              }
+              // F5 or Ctrl+Enter to run
+              if (e.key === "F5" || (e.key === "Enter" && e.ctrlKey)) {
+                e.preventDefault();
+                onRun();
+              }
+            }}
+            onBlur={() => setTimeout(() => setSuggestions([]), 200)}
+            placeholder={
+              tableName
+                ? `SELECT *\nFROM ${tableName}\nWHERE vendor_category = 'Electronics'\n  AND YEAR(contract_date) = 2024`
+                : "SELECT * FROM your_table WHERE ..."
+            }
+            spellCheck={false}
+            style={{
+              width: "100%",
+              background: "#060f1a",
+              border: `1px solid ${error ? "#c0392b" : value.trim() ? "#2d6aad" : "#1a2e45"}`,
+              borderRadius: 8,
+              color: "#c8e0ff",
+              fontSize: 12,
+              fontFamily: "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+              padding: "10px 12px",
+              outline: "none",
+              resize: "vertical",
+              lineHeight: 1.7,
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+              minHeight: 90,
+            }}
+          />
+        </div>
+
+        {/* Run button */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <button
+            onClick={onRun}
+            disabled={loading || !value.trim()}
+            style={{
+              background: value.trim() ? "#1a4a8a" : "#0f1e30",
+              border: `1px solid ${value.trim() ? "#2d6aad" : "#1a2e45"}`,
+              borderRadius: 8, color: value.trim() ? "#90c8ff" : "#2d4a6a",
+              fontSize: 12, fontWeight: 700, padding: "10px 16px",
+              cursor: value.trim() && !loading ? "pointer" : "default",
+              transition: "all 0.2s", whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 6,
+            }}
+            title="Run query (F5 or Ctrl+Enter)"
+          >
+            {loading
+              ? <><span className="spinner-sm" /> Running…</>
+              : <>▶ Run</>
+            }
+          </button>
+
+          {value.trim() && (
+            <button
+              onClick={() => onChange("")}
+              style={{
+                background: "none", border: "1px solid #1a2e45",
+                borderRadius: 8, color: "#4a7fa5", fontSize: 11,
+                padding: "6px 10px", cursor: "pointer",
+              }}
+              title="Clear query"
+            >
+              ✕ Clear
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Autocomplete dropdown */}
+      {/* Autocomplete */}
       {suggestions.length > 0 && (
         <div style={{
-          position: "absolute", top: "calc(100% + 2px)", left: 0, right: 0,
-          zIndex: 1001, background: "#0a1929",
+          position: "absolute", top: "calc(100% - 4px)", left: 0,
+          zIndex: 1001, background: "#080f1a",
           border: "1px solid #1e3a5f", borderRadius: 8,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-          overflow: "hidden",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.7)",
+          overflow: "hidden", minWidth: 220,
         }}>
-          {suggestions.map((s, i) => (
-            <div
-              key={s}
-              onMouseDown={() => applySuggestion(s)}
-              style={{
-                padding: "7px 14px", fontSize: 12,
-                color: i === sugIdx ? "#90c8ff" : "#7eb8f7",
-                background: i === sugIdx ? "#0f1e30" : "transparent",
-                cursor: "pointer",
-                fontFamily: "'Fira Code', monospace",
-                display: "flex", alignItems: "center", gap: 8,
-              }}
-              onMouseEnter={() => setSugIdx(i)}
-            >
-              <span style={{
-                fontSize: 10, color: "#4a7fa5",
-                background: "#0f1e30", borderRadius: 3,
-                padding: "1px 5px", flexShrink: 0,
-              }}>
-                {columns.includes(s) ? "col" : "kw"}
-              </span>
-              {s}
-            </div>
-          ))}
+          {suggestions.map((s, i) => {
+            const isCol = columns.includes(s);
+            const isTable = s === tableName;
+            const tag = isCol ? "col" : isTable ? "tbl" : "sql";
+            const tagColor = isCol ? "#2d6aad" : isTable ? "#2d8a4a" : "#6a4a8a";
+            return (
+              <div key={s} onMouseDown={() => applySuggestion(s)}
+                style={{
+                  padding: "7px 12px", fontSize: 12,
+                  color: i === sugIdx ? "#90c8ff" : "#7eb8f7",
+                  background: i === sugIdx ? "#0f1e30" : "transparent",
+                  cursor: "pointer", fontFamily: "'Fira Code', monospace",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}
+                onMouseEnter={() => setSugIdx(i)}
+              >
+                <span style={{
+                  fontSize: 9, background: tagColor, color: "#fff",
+                  borderRadius: 3, padding: "1px 5px", flexShrink: 0,
+                  fontWeight: 700, textTransform: "uppercase",
+                }}>
+                  {tag}
+                </span>
+                {s}
+              </div>
+            );
+          })}
+          <div style={{ padding: "4px 12px", fontSize: 10, color: "#2d4a6a", borderTop: "1px solid #1a2e45" }}>
+            Tab · ↑↓ · Enter to complete
+          </div>
         </div>
       )}
 
-      {/* Error */}
-      {error && (
-        <div style={{ marginTop: 4, fontSize: 11, color: "#e05555" }}>
-          ⚠ {error}
-        </div>
-      )}
-
-      {/* Hint */}
-      {!error && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#2d4a6a" }}>
-          Supports: = != &gt; &lt; &gt;= &lt;= LIKE IN AND OR NOT IS NULL · Tab to autocomplete
-        </div>
-      )}
+      {/* Status */}
+      <div style={{ marginTop: 5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {error
+          ? <span style={{ fontSize: 11, color: "#c0392b" }}>⚠ {error}</span>
+          : <span style={{ fontSize: 10, color: "#2d4a6a" }}>
+              Full SSMS-style SQL · F5 or Ctrl+Enter to run · Tab to autocomplete
+            </span>
+        }
+      </div>
     </div>
   );
 }
@@ -388,28 +298,22 @@ function QueryInput({ value, onChange, columns, error }) {
 // ── FilterPanel ───────────────────────────────────────────────────────────────
 export default function FilterPanel({
   columns,
+  tableName,
   data,
   query,
   onQueryChange,
-  slicers,           // { [field]: Set<string> }
-  onSlicerChange,    // (field, Set) => void
-  onAddSlicer,       // (field) => void
-  onRemoveSlicer,    // (field) => void
+  onRunQuery,
+  slicers,
+  onSlicerChange,
+  onAddSlicer,
+  onRemoveSlicer,
   activeFilterCount,
   hasDataset,
+  queryLoading,
+  queryError,
 }) {
   const [open, setOpen] = useState(false);
-  const [queryError, setQueryError] = useState("");
-  const [addSlicerField, setAddSlicerField] = useState("");
 
-  // Validate query live
-  useEffect(() => {
-    if (!query.trim() || !data?.length) { setQueryError(""); return; }
-    const result = evaluateQuery(data, query);
-    setQueryError(result === null ? "Invalid expression — check syntax" : "");
-  }, [query, data]);
-
-  // Unique values per slicer field
   const slicerValues = useMemo(() => {
     const out = {};
     for (const field of Object.keys(slicers)) {
@@ -424,20 +328,15 @@ export default function FilterPanel({
 
   return (
     <div style={{
-      margin: "0 0 0 0",
-      border: "1px solid #1a2e45",
-      borderRadius: 10,
-      background: "#07111e",
-      overflow: "visible",
+      border: "1px solid #1a2e45", borderRadius: 10,
+      background: "#07111e", overflow: "visible",
     }}>
-      {/* ── Toggle header ── */}
+      {/* Toggle header */}
       <button
         onClick={() => setOpen(v => !v)}
         style={{
-          width: "100%", display: "flex", alignItems: "center",
-          gap: 10, padding: "10px 16px",
-          background: "none", border: "none", cursor: "pointer",
-          borderRadius: open ? "10px 10px 0 0" : 10,
+          width: "100%", display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 16px", background: "none", border: "none", cursor: "pointer",
           borderBottom: open ? "1px solid #1a2e45" : "none",
         }}
       >
@@ -451,9 +350,8 @@ export default function FilterPanel({
 
         {activeFilterCount > 0 && (
           <span style={{
-            background: "#2d6aad", color: "#fff",
-            borderRadius: 10, fontSize: 10, fontWeight: 700,
-            padding: "1px 7px", marginLeft: 2,
+            background: "#2d6aad", color: "#fff", borderRadius: 10,
+            fontSize: 10, fontWeight: 700, padding: "1px 7px",
           }}>
             {activeFilterCount} active
           </span>
@@ -464,24 +362,29 @@ export default function FilterPanel({
         </span>
       </button>
 
-      {/* ── Panel body ── */}
       {open && (
         <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 18 }}>
 
-          {/* Query box */}
+          {/* SQL Query Editor */}
           <div>
             <div style={{
               fontSize: 10, fontWeight: 700, color: "#4a7fa5",
               textTransform: "uppercase", letterSpacing: "0.07em",
               marginBottom: 8, display: "flex", alignItems: "center", gap: 6,
             }}>
-              <span>⌨</span> Query Filter
+              <span>⌨</span> SQL Query
+              <span style={{ fontSize: 9, color: "#2d4a6a", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+                — full SELECT query, runs directly on SQL Server
+              </span>
             </div>
-            <QueryInput
+            <QueryEditor
               value={query}
               onChange={onQueryChange}
+              onRun={() => onRunQuery(query)}
               columns={columns}
+              tableName={tableName}
               error={queryError}
+              loading={queryLoading}
             />
           </div>
 
@@ -493,12 +396,15 @@ export default function FilterPanel({
               marginBottom: 10, display: "flex", alignItems: "center",
               justifyContent: "space-between",
             }}>
-              <span>⧉ Slicers</span>
-              {/* Add slicer dropdown */}
+              <span>⧉ Slicers
+                <span style={{ fontSize: 9, color: "#2d4a6a", fontWeight: 400, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>
+                  — filters currently loaded data
+                </span>
+              </span>
               {availableForSlicer.length > 0 && (
                 <select
                   value=""
-                  onChange={(e) => { if (e.target.value) { onAddSlicer(e.target.value); setAddSlicerField(""); } }}
+                  onChange={(e) => { if (e.target.value) onAddSlicer(e.target.value); }}
                   style={{
                     background: "#0f1e30", border: "1px solid #1e3a5f",
                     borderRadius: 5, color: "#7eb8f7", fontSize: 11,
@@ -515,12 +421,10 @@ export default function FilterPanel({
 
             {Object.keys(slicers).length === 0 ? (
               <p style={{ fontSize: 12, color: "#2d4a6a", margin: 0 }}>
-                No slicers added. Use "+ Add slicer…" above to add one.
+                No slicers added. Use "+ Add slicer…" to add one.
               </p>
             ) : (
-              <div style={{
-                display: "flex", flexWrap: "wrap", gap: 12,
-              }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                 {Object.keys(slicers).map(field => (
                   <div key={field} style={{
                     background: "#0a1929", border: "1px solid #1a2e45",
@@ -546,13 +450,13 @@ export default function FilterPanel({
               <button
                 onClick={() => {
                   onQueryChange("");
+                  onRunQuery("");
                   Object.keys(slicers).forEach(f => onSlicerChange(f, new Set()));
                 }}
                 style={{
                   background: "none", border: "1px solid #3a2020",
                   borderRadius: 6, color: "#e05555", fontSize: 11,
-                  padding: "5px 14px", cursor: "pointer",
-                  fontWeight: 600,
+                  padding: "5px 14px", cursor: "pointer", fontWeight: 600,
                 }}
               >
                 ✕ Clear all filters
